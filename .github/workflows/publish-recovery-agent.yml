@@ -1,0 +1,71 @@
+name: Publish recovery agent 5.0.27
+
+on:
+  push:
+    paths:
+      - '.github/workflows/publish-recovery-agent.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-recovery-agent-5.0.27
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: Diesel4366/itdoctor-pulse
+      RELEASE_TAG: v5.0.27
+    steps:
+      - name: Fetch and verify recovery agent
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p assets
+          cd assets
+          curl --fail --location --retry 3 --connect-timeout 15 --max-time 300 \
+            http://45.84.227.154:8765/dl/IT-Doctor-Agent-5.0.27.exe -o IT-Doctor-Agent.exe
+          curl --fail --location --retry 3 --connect-timeout 15 --max-time 120 \
+            http://45.84.227.154:8765/dl/wintun.dll -o wintun.dll
+          echo '305bdca9bd7a3b1b9fa1ab8e1bfb4bf232587f15e6bbb897f8ef4c4d6df03647  IT-Doctor-Agent.exe' | sha256sum --check
+          echo 'e5da8447dc2c320edc0fc52fa01885c103de8c118481f683643cacc3220dafce  wintun.dll' | sha256sum --check
+          sha256sum IT-Doctor-Agent.exe > IT-Doctor-Agent.exe.sha256
+          sha256sum wintun.dll > wintun.dll.sha256
+
+      - name: Preserve desktop updater assets from 5.0.26
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release download v5.0.26 --dir assets \
+            --pattern 'IT-Doctor-Pulse-*' --pattern 'latest*.yml'
+
+      - name: Publish agent release after all downloads pass
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > release-notes.md <<'NOTES'
+          Recovery release for the Windows IT-Doctor Agent.
+
+          - Agent 5.0.27 connects to 45.84.227.154.
+          - Existing VPN configuration pointing to 31.129.96.100:51820 migrates to the new endpoint while retaining device identity and keys.
+          - Includes wintun.dll and SHA256 checksums.
+          - Desktop client files and updater metadata remain at version 5.0.26.
+          - Older agents download updates only from the old VPS and require an initial manual or remote replacement of the agent executable.
+          - The Windows build passed compilation. Windows runtime behavior has not yet been verified.
+          NOTES
+          if ! gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --draft --target "$GITHUB_SHA" \
+              --title '5.0.27 — agent recovery for new VPS' --notes-file release-notes.md
+          fi
+          draft="$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft)"
+          if [ "$draft" != true ]; then
+            echo 'Release is already published. Refusing to overwrite published assets.'
+            exit 0
+          fi
+          gh release upload "$RELEASE_TAG" assets/* --clobber
+          gh release edit "$RELEASE_TAG" --draft=false --latest
